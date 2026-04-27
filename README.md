@@ -20,15 +20,19 @@ skills.uy/
         └── ...             # supporting code / scripts / references
 ```
 
-## Installing a skill
+## Installing
 
-Symlink (or copy) a skill folder into your Claude skills directory:
+Clone the repo somewhere stable and run `./install.sh`. The script symlinks every `skills/*/` into `~/.claude/skills/`, so the skills appear in Claude Code on next session start.
 
 ```bash
-ln -s "$PWD/skills/asse" ~/.claude/skills/asse
+git clone git@github.com:agurod42/skills.uy.git ~/Code/skills.uy
+cd ~/Code/skills.uy
+./install.sh
 ```
 
-Then mention it in conversation — Claude will invoke it when the description matches.
+Re-run `./install.sh` after `git pull` or after adding a new skill — it's idempotent. Override the target with `CLAUDE_SKILLS_DIR=/some/other/path ./install.sh`.
+
+Because skills are symlinked (not copied), editing a `SKILL.md` in this repo takes effect immediately.
 
 ## Contributing
 
