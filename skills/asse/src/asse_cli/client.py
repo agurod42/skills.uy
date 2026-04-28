@@ -13,6 +13,10 @@ import httpx
 from asse_cli.genexus import GeneXusEvent, GeneXusState
 
 
+class UnexpectedResponseError(RuntimeError):
+    """Raised when a GeneXus event returns a response shape the CLI cannot parse."""
+
+
 @dataclass
 class WebSession:
     cookies: dict[str, str] = field(default_factory=dict)
@@ -82,25 +86,41 @@ class WebClient:
         self._sync_session_cookies()
         return response
 
-    def post_event(self, servlet_or_url: str, event: GeneXusEvent) -> dict[str, Any]:
+    def post_event(
+        self,
+        servlet_or_url: str,
+        event: GeneXusEvent,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         url = self._url(servlet_or_url)
         if "gx-no-cache=" not in url:
             separator = "&" if "?" in url else "?"
             url = f"{url}{separator}gx-no-cache={int(time.time() * 1000)}"
+        request_headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "GxAjaxRequest": "1",
+            "Origin": self.origin,
+            "Referer": self.session.current_url or self.session.base_url,
+        }
+        if headers:
+            request_headers.update(headers)
         response = self.http.post(
             url,
             json=event.to_payload(),
-            headers={
-                "Content-Type": "application/json",
-                "Origin": self.origin,
-                "Referer": self.session.current_url or self.session.base_url,
-            },
+            headers=request_headers,
         )
         response.raise_for_status()
-        data = response.json()
-        self.session.state.apply_response(data)
         self._capture_current_url(response)
         self._sync_session_cookies()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as exc:
+            raise UnexpectedResponseError(_unexpected_json_response_message(response)) from exc
+        if not isinstance(data, dict):
+            raise UnexpectedResponseError(_unexpected_json_response_message(response))
+        self.session.state.apply_response(data)
         return data
 
     def is_own_url(self, url: str) -> bool:
@@ -126,6 +146,16 @@ class WebClient:
 
 def is_url_on_host(url: str, host: str) -> bool:
     return (urlparse(url).hostname or "") == host
+
+
+def _unexpected_json_response_message(response: httpx.Response) -> str:
+    content_type = response.headers.get("content-type") or "sin content-type"
+    parsed = urlparse(str(response.url))
+    path = parsed.path or "/"
+    return (
+        "Respuesta inesperada del servidor: esperaba JSON GeneXus y recibio "
+        f"{content_type} (status {response.status_code}, path {path})."
+    )
 
 
 def session_cookies_from_jar(

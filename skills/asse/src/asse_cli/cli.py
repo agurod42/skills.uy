@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,111 +15,43 @@ from asse_cli.agenda_client import AGENDA_BASE_URL, AGENDA_HOST, AgendaClient, i
 from asse_cli.client import WebSession
 from asse_cli.extract import (
     Reservation,
-    extract_appointment_flow,
     extract_html_text_summary,
-    extract_reservations_from_har,
     extract_reservations_from_html,
-)
-from asse_cli.har import (
-    extract_cookies_for_host,
-    extract_genexus_traces,
-    extract_public_links,
-    load_har,
-    redact_value,
-    summarize_requests,
 )
 from asse_cli.hcd_client import HCD_BASE_URL, HCD_HOST, HCD_LOGIN_URL, HcdClient, is_hcd_url
 from asse_cli.hcd_extract import (
     HcdAccessLogEntry,
     HcdEncounter,
+    HcdVisitDocument,
+    HcdVisitTarget,
     HcdVaccination,
     HcdVaccineReport,
     extract_hcd_accesses,
-    extract_hcd_accesses_from_har,
     extract_hcd_timeline,
-    extract_hcd_timeline_from_har,
     extract_hcd_vaccine_report,
-    extract_hcd_vaccine_report_from_har,
 )
 
 
 app = typer.Typer(help="CLI para flujos digitales de ASSE y salud pública uruguaya.")
 
-agenda_app = typer.Typer(help="Agenda Web de ASSE: reservas, sesiones y HARs.")
-agenda_har_app = typer.Typer(help="Inspecciona HARs de Agenda Web.")
+agenda_app = typer.Typer(help="Agenda Web de ASSE: reservas y sesiones.")
 agenda_session_app = typer.Typer(help="Gestiona sesion local de Agenda Web.")
 agenda_reservas_app = typer.Typer(help="Consulta reservas de Agenda Web.")
 
 hcd_app = typer.Typer(help="Historia Clinica Digital / HCEN.")
-hcd_har_app = typer.Typer(help="Inspecciona HARs de Historia Clinica Digital.")
 hcd_session_app = typer.Typer(help="Gestiona sesion local de Historia Clinica Digital.")
 
 app.add_typer(agenda_app, name="agenda")
-agenda_app.add_typer(agenda_har_app, name="har")
 agenda_app.add_typer(agenda_session_app, name="session")
 agenda_app.add_typer(agenda_reservas_app, name="reservas")
 
 app.add_typer(hcd_app, name="hcd")
-hcd_app.add_typer(hcd_har_app, name="har")
 hcd_app.add_typer(hcd_session_app, name="session")
 
 
 SESSION_DIR = Path.home() / ".asse-cli"
 AGENDA_SESSION = SESSION_DIR / "agenda-session.json"
 HCD_SESSION = SESSION_DIR / "hcd-session.json"
-
-
-@agenda_har_app.command("summary")
-def agenda_har_summary(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
-) -> None:
-    _print_har_summary(har_path, limit)
-
-
-@agenda_har_app.command("events")
-def agenda_har_events(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-) -> None:
-    _print_har_events(har_path, json_output)
-
-
-@agenda_har_app.command("public-links")
-def agenda_har_public_links(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    contains: Annotated[str, typer.Option("--contains", "-c")] = "agenda",
-) -> None:
-    for link in extract_public_links(load_har(har_path), contains=contains):
-        typer.echo(link)
-
-
-@agenda_har_app.command("reservations")
-def agenda_har_reservations(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-    show_codes: Annotated[bool, typer.Option("--show-codes")] = False,
-) -> None:
-    reservations = extract_reservations_from_har(load_har(har_path))
-    _print_reservations(reservations, json_output=json_output, show_codes=show_codes)
-
-
-@agenda_har_app.command("appointment-flow")
-def agenda_har_appointment_flow(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-) -> None:
-    steps = extract_appointment_flow(load_har(har_path))
-    if not steps:
-        typer.echo("No encontre flujo de reserva en el HAR.")
-        return
-    for idx, step in enumerate(steps, start=1):
-        output_preview = ", ".join(step.output_names[:8])
-        if len(step.output_names) > 8:
-            output_preview += ", ..."
-        typer.echo(
-            f"{idx:02d}. {step.event} inputs={step.input_count} "
-            f"commands={','.join(step.commands) or '-'} outputs={output_preview or '-'}"
-        )
 
 
 @agenda_session_app.command("login-url")
@@ -128,14 +61,6 @@ def agenda_session_login_url() -> None:
         typer.echo(client.discover_login_url())
     finally:
         client.close()
-
-
-@agenda_session_app.command("import-har-cookies")
-def agenda_session_import_har_cookies(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    session_path: Annotated[Path, typer.Option("--session")] = AGENDA_SESSION,
-) -> None:
-    _import_har_cookies(har_path, session_path, host=AGENDA_HOST, base_url=AGENDA_BASE_URL)
 
 
 @agenda_session_app.command("login-browser")
@@ -205,51 +130,6 @@ def agenda_reservas_list(
     _print_reservations(reservations, json_output=json_output, show_codes=show_codes)
 
 
-@hcd_har_app.command("summary")
-def hcd_har_summary(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
-) -> None:
-    _print_har_summary(har_path, limit)
-
-
-@hcd_har_app.command("events")
-def hcd_har_events(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-) -> None:
-    _print_har_events(har_path, json_output)
-
-
-@hcd_har_app.command("timeline")
-def hcd_har_timeline(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-    show_links: Annotated[bool, typer.Option("--show-links")] = False,
-) -> None:
-    encounters = extract_hcd_timeline_from_har(load_har(har_path))
-    _print_hcd_timeline(encounters, json_output=json_output, show_links=show_links)
-
-
-@hcd_har_app.command("vacunas")
-def hcd_har_vacunas(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-    show_links: Annotated[bool, typer.Option("--show-links")] = False,
-) -> None:
-    report = extract_hcd_vaccine_report_from_har(load_har(har_path))
-    _print_hcd_vaccine_report(report, json_output=json_output, show_links=show_links)
-
-
-@hcd_har_app.command("accesos")
-def hcd_har_accesos(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-) -> None:
-    accesses = extract_hcd_accesses_from_har(load_har(har_path))
-    _print_hcd_accesses(accesses, json_output=json_output)
-
-
 @hcd_session_app.command("login-browser")
 def hcd_session_login_browser(
     session_path: Annotated[Path, typer.Option("--session")] = HCD_SESSION,
@@ -264,14 +144,6 @@ def hcd_session_login_browser(
         headless=headless,
         prompt="Complete el login de ID Uruguay en el navegador. Esperando HCD...",
     )
-
-
-@hcd_session_app.command("import-har-cookies")
-def hcd_session_import_har_cookies(
-    har_path: Annotated[Path, typer.Argument(exists=True, file_okay=True, dir_okay=False)],
-    session_path: Annotated[Path, typer.Option("--session")] = HCD_SESSION,
-) -> None:
-    _import_har_cookies(har_path, session_path, host=HCD_HOST, base_url=HCD_BASE_URL)
 
 
 @hcd_session_app.command("show")
@@ -297,6 +169,51 @@ def hcd_timeline(
         session.save(session_path)
         client.close()
     _print_hcd_timeline(encounters, json_output=json_output, show_links=show_links)
+
+
+@hcd_app.command("visitas")
+def hcd_visitas(
+    session_path: Annotated[Path, typer.Option("--session")] = HCD_SESSION,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    session = _load_required_session(session_path, HCD_BASE_URL, "asse hcd session login-browser")
+    client = HcdClient(session)
+    try:
+        try:
+            targets = client.visit_targets()
+        except RuntimeError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(1) from exc
+    finally:
+        session.save(session_path)
+        client.close()
+    _print_hcd_visit_targets(targets, json_output=json_output)
+
+
+@hcd_app.command("visita", context_settings={"allow_extra_args": True})
+def hcd_visita(
+    ctx: typer.Context,
+    index_arg: Annotated[
+        str | None,
+        typer.Argument(metavar="INDEX", help="Numero de visita a abrir."),
+    ] = None,
+    session_path: Annotated[Path, typer.Option("--session")] = HCD_SESSION,
+    index_option: Annotated[int | None, typer.Option("--index", "-i", min=1)] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    index = _resolve_hcd_visit_index(index_arg, index_option, ctx.args)
+    session = _load_required_session(session_path, HCD_BASE_URL, "asse hcd session login-browser")
+    client = HcdClient(session)
+    try:
+        try:
+            visit = client.visit_document(index)
+        except (RuntimeError, ValueError) as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(1) from exc
+    finally:
+        session.save(session_path)
+        client.close()
+    _print_hcd_visit(visit, json_output=json_output)
 
 
 @hcd_app.command("vacunas")
@@ -333,43 +250,9 @@ def hcd_accesos(
         client.close()
     if not accesses:
         typer.echo("No pude extraer accesos desde el GET de HCD.")
-        typer.echo("Ese panel suele cargar por un POST K2BTools firmado; use: asse hcd har accesos <har>")
+        typer.echo("Ese panel suele cargar por un POST K2BTools firmado; todavia no esta soportado live.")
         raise typer.Exit(1)
     _print_hcd_accesses(accesses, json_output=json_output)
-
-
-def _print_har_summary(har_path: Path, limit: int) -> None:
-    requests = load_har(har_path)
-    summary = summarize_requests(requests)
-    typer.echo(f"Requests: {len(requests)}")
-    _print_counter("Hosts", summary["hosts"], limit)
-    _print_counter("Methods", summary["methods"], limit)
-    _print_counter("Statuses", summary["statuses"], limit)
-    _print_counter("Endpoints", summary["endpoints"], limit)
-
-
-def _print_har_events(har_path: Path, json_output: bool) -> None:
-    traces = extract_genexus_traces(load_har(har_path))
-    if json_output:
-        typer.echo(json.dumps([trace.__dict__ for trace in traces], indent=2, ensure_ascii=False))
-        return
-    for trace in traces:
-        typer.echo(
-            f"{trace.obj_class:18} {','.join(trace.events):42} "
-            f"parms={trace.parm_count:<2} hsh={trace.hash_count:<2} "
-            f"commands={','.join(trace.command_names) or '-'}"
-        )
-
-
-def _import_har_cookies(har_path: Path, session_path: Path, *, host: str, base_url: str) -> None:
-    cookies = extract_cookies_for_host(load_har(har_path), host)
-    if not cookies:
-        typer.echo(f"No encontre cookies para {host}.")
-        raise typer.Exit(1)
-    WebSession(cookies=cookies, base_url=base_url).save(session_path)
-    typer.echo(f"Sesion escrita en {session_path}")
-    for name in sorted(cookies):
-        typer.echo(f"  {name}={redact_value(cookies[name])}")
 
 
 def _login_with_browser(
@@ -420,7 +303,7 @@ def _ensure_playwright():
         return sync_playwright
     except ImportError:
         typer.echo("Playwright no esta instalado. Instalando en este primer uso...")
-        _run_bootstrap_command([sys.executable, "-m", "pip", "install", "playwright>=1.45.0"])
+        _install_python_requirement("playwright>=1.45.0")
         importlib.invalidate_caches()
         try:
             from playwright.sync_api import sync_playwright
@@ -429,8 +312,78 @@ def _ensure_playwright():
         except ImportError as exc:
             raise typer.BadParameter(
                 "No pude importar Playwright despues de instalarlo. "
-                f"Reintente manualmente con: {sys.executable} -m pip install playwright"
+                f"Reintente manualmente con: {_manual_playwright_install_hint()}"
             ) from exc
+
+
+def _install_python_requirement(requirement: str) -> None:
+    candidates: list[tuple[str, list[list[str]]]] = [
+        ("pip", [[sys.executable, "-m", "pip", "install", requirement]]),
+    ]
+    uv = _find_executable("uv")
+    if uv:
+        candidates.append(("uv", [[uv, "pip", "install", "--python", sys.executable, requirement]]))
+    candidates.append(
+        (
+            "ensurepip",
+            [
+                [sys.executable, "-m", "ensurepip", "--upgrade"],
+                [sys.executable, "-m", "pip", "install", requirement],
+            ],
+        )
+    )
+
+    failures: list[str] = []
+    for name, steps in candidates:
+        ok, failure = _run_bootstrap_steps(steps)
+        if ok:
+            return
+        failures.append(f"{name}: {failure}")
+
+    details = "\n".join(failures)
+    raise typer.BadParameter(f"Fallo el bootstrap automatico instalando {requirement}.\n{details}")
+
+
+def _run_bootstrap_steps(steps: list[list[str]]) -> tuple[bool, str]:
+    for command in steps:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            return False, _format_bootstrap_failure(command, result)
+    return True, ""
+
+
+def _format_bootstrap_failure(command: list[str], result: subprocess.CompletedProcess[str]) -> str:
+    output = "\n".join(
+        part.strip() for part in (result.stderr or "", result.stdout or "") if part.strip()
+    )
+    if len(output) > 500:
+        output = output[-500:]
+    if output:
+        return f"{' '.join(command)} -> {output}"
+    return f"{' '.join(command)} -> exit {result.returncode}"
+
+
+def _find_executable(name: str) -> str:
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in (
+        Path.home() / ".local" / "bin",
+        Path.home() / ".cargo" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ):
+        candidate = directory / name
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
+def _manual_playwright_install_hint() -> str:
+    uv = _find_executable("uv")
+    if uv:
+        return f"{uv} pip install --python {sys.executable} playwright"
+    return f"{sys.executable} -m ensurepip --upgrade && {sys.executable} -m pip install playwright"
 
 
 def _run_bootstrap_command(command: list[str]) -> None:
@@ -446,6 +399,12 @@ def _looks_like_missing_browser(exc: Exception) -> bool:
         or "please run the following command" in message
         or "playwright install" in message
     )
+
+
+def redact_value(value: str, keep: int = 6) -> str:
+    if len(value) <= keep * 2:
+        return "<redacted>"
+    return f"{value[:keep]}...{value[-keep:]}"
 
 
 def _show_session(session_path: Path, *, default_base_url: str) -> None:
@@ -469,11 +428,37 @@ def _load_required_session(session_path: Path, default_base_url: str, command_hi
     return WebSession.load(session_path, default_base_url=default_base_url)
 
 
+def _resolve_hcd_visit_index(
+    index_arg: str | None,
+    index_option: int | None,
+    extra_args: list[str],
+) -> int:
+    tokens = [token for token in [index_arg, *extra_args] if token]
+    if index_option is not None:
+        if tokens:
+            raise typer.BadParameter("Use un indice como argumento o --index, no ambos.")
+        return index_option
+    if tokens and tokens[0] == "show":
+        tokens = tokens[1:]
+    if not tokens:
+        return 1
+    if len(tokens) != 1:
+        raise typer.BadParameter("Uso: asse hcd visita [N]")
+    try:
+        index = int(tokens[0])
+    except ValueError as exc:
+        raise typer.BadParameter("El indice de visita debe ser un numero.") from exc
+    if index < 1:
+        raise typer.BadParameter("El indice de visita debe ser mayor o igual a 1.")
+    return index
+
+
 def _ensure_hcd_response(url: object) -> None:
     final_url = str(url)
-    if is_hcd_url(final_url):
+    parsed_path = urlparse(final_url).path.lower()
+    if is_hcd_url(final_url) and not parsed_path.endswith("/com.mihcd.loginweb"):
         return
-    typer.echo("Sesion expirada: HCD redirigio fuera de Historia Clinica Digital.")
+    typer.echo("Sesion expirada: HCD redirigio al login.")
     typer.echo(f"URL final: {final_url}")
     typer.echo("Refresque con: asse hcd session login-browser")
     raise typer.Exit(1)
@@ -581,10 +566,31 @@ def _print_hcd_accesses(accesses: list[HcdAccessLogEntry], *, json_output: bool)
         )
 
 
-def _print_counter(title: str, counter: object, limit: int) -> None:
-    typer.echo(f"\n{title}:")
-    for value, count in counter.most_common(limit):  # type: ignore[attr-defined]
-        typer.echo(f"  {count:4d}  {value}")
+def _print_hcd_visit_targets(targets: list[HcdVisitTarget], *, json_output: bool) -> None:
+    if json_output:
+        typer.echo(
+            json.dumps([_hcd_visit_target_to_dict(item) for item in targets], indent=2, ensure_ascii=False)
+        )
+        return
+    if not targets:
+        typer.echo("No encontre visitas abribles en HCD.")
+        return
+    for item in targets:
+        provider = item.provider or "-"
+        typer.echo(
+            f"{item.row:02d} | {item.date or '-'} | {item.category or '-'} | "
+            f"{provider} | {item.specialty or '-'} | {item.professional or '-'}"
+        )
+
+
+def _print_hcd_visit(visit: HcdVisitDocument, *, json_output: bool) -> None:
+    if json_output:
+        typer.echo(json.dumps(_hcd_visit_to_dict(visit), indent=2, ensure_ascii=False))
+        return
+    if visit.title:
+        typer.echo(visit.title)
+        typer.echo("")
+    typer.echo(visit.text)
 
 
 def _redact_url(url: str, *, show: bool = False) -> str:
@@ -657,6 +663,35 @@ def _hcd_access_to_dict(item: HcdAccessLogEntry) -> dict[str, object]:
         "observation": item.observation,
         "detail": item.detail,
         "emergency": item.emergency,
+    }
+
+
+def _hcd_visit_summary_to_dict(item: HcdVisitDocument) -> dict[str, object]:
+    return {
+        "row": item.row,
+        "title": item.title,
+        "date": item.date,
+        "category": item.category,
+        "provider": item.provider,
+        "professional": item.professional,
+        "event_date": item.event_date,
+    }
+
+
+def _hcd_visit_to_dict(item: HcdVisitDocument) -> dict[str, object]:
+    data = _hcd_visit_summary_to_dict(item)
+    data["text"] = item.text
+    return data
+
+
+def _hcd_visit_target_to_dict(item: HcdVisitTarget) -> dict[str, object]:
+    return {
+        "row": item.row,
+        "date": item.date,
+        "category": item.category,
+        "provider": item.provider,
+        "specialty": item.specialty,
+        "professional": item.professional,
     }
 
 

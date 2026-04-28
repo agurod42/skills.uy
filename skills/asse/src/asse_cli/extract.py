@@ -7,8 +7,6 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from asse_cli.har import HarRequest
-
 
 @dataclass(frozen=True)
 class Reservation:
@@ -18,27 +16,6 @@ class Reservation:
     professional: str
     number_and_time: str
     consultation_code: str
-
-
-@dataclass(frozen=True)
-class AppointmentFlowStep:
-    event: str
-    url: str
-    input_count: int
-    output_names: tuple[str, ...]
-    commands: tuple[str, ...]
-
-
-def extract_reservations_from_har(requests: list[HarRequest]) -> list[Reservation]:
-    for request in requests:
-        body = request.post_json() or {}
-        if body.get("objClass") != "misreservas":
-            continue
-        if "'VERHISTORICO'" not in body.get("events", []):
-            continue
-        response = request.response_json() or {}
-        return extract_reservations_from_response(response)
-    return []
 
 
 def extract_reservations_from_html(html: str) -> list[Reservation]:
@@ -57,27 +34,6 @@ def extract_reservations_from_response(response: dict[str, Any]) -> list[Reserva
     if data:
         return _reservation_rows_from_grid_data(data)
     return []
-
-
-def extract_appointment_flow(requests: list[HarRequest]) -> list[AppointmentFlowStep]:
-    steps: list[AppointmentFlowStep] = []
-    for request in requests:
-        body = request.post_json() or {}
-        if body.get("objClass") != "reservarcita":
-            continue
-        response = request.response_json() or {}
-        events = body.get("events") or []
-        event = "|".join(str(item) for item in events)
-        steps.append(
-            AppointmentFlowStep(
-                event=event,
-                url=request.url,
-                input_count=len(body.get("parms") or []),
-                output_names=tuple(sorted(_response_values(response).keys())),
-                commands=tuple(_command_names(response.get("gxCommands") or [])),
-            )
-        )
-    return steps
 
 
 def _reservation_rows(values: dict[str, Any]) -> list[Reservation]:
@@ -171,15 +127,3 @@ def _reservation_rows_from_hidden_input(html: str, name: str) -> list[Reservatio
     except json.JSONDecodeError:
         return []
     return _reservation_rows_from_grid_data(data) if isinstance(data, list) else []
-
-
-def _command_names(commands: list[Any]) -> list[str]:
-    names: list[str] = []
-    for command in commands:
-        if isinstance(command, dict) and len(command) == 1:
-            names.append(next(iter(command)))
-        elif isinstance(command, dict):
-            names.append(",".join(sorted(command.keys())))
-        else:
-            names.append(type(command).__name__)
-    return names

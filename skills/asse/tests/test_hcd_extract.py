@@ -1,8 +1,14 @@
 import json
+import base64
 
 from asse_cli.hcd_extract import (
+    extract_hcd_ajax_security_token,
     extract_hcd_accesses,
+    extract_hcd_security_headers,
     extract_hcd_timeline,
+    extract_hcd_visit_document,
+    extract_hcd_visit_targets,
+    extract_hcd_visualizer_url,
     extract_hcd_vaccine_report,
 )
 
@@ -87,3 +93,98 @@ def test_extract_hcd_accesses() -> None:
     assert len(accesses) == 1
     assert accesses[0].provider == "ASSE"
     assert accesses[0].detail == "Acceso habilitado por el usuario"
+
+
+def test_extract_hcd_visit_document() -> None:
+    html = """
+    <html>
+      <head><title>SERVICIO DE CARDIOLOGIA</title></head>
+      <body>
+        <table>
+          <tr><td>Prestador</td><td>ASSE</td></tr>
+          <tr><td>Profesional</td><td>DRA. TEST</td></tr>
+          <tr><td>Fecha del evento</td><td>Abril 9, 2026</td></tr>
+        </table>
+        <h2>Consulta actual</h2>
+        <p>Texto clinico de prueba.</p>
+      </body>
+    </html>
+    """
+
+    document = extract_hcd_visit_document(
+        html,
+        meta={"date": "09 de abril 2026", "category": "Policlinica"},
+    )
+
+    assert document is not None
+    assert document.title == "SERVICIO DE CARDIOLOGIA"
+    assert document.date == "09 de abril 2026"
+    assert document.category == "Policlinica"
+    assert document.provider == "ASSE"
+    assert document.professional == "DRA. TEST"
+    assert document.event_date == "Abril 9, 2026"
+    assert "Texto clinico de prueba." in document.text
+
+
+def test_extract_hcd_visit_targets() -> None:
+    html = f"""
+    <input type="hidden" name="GXState"
+      value='{{
+        "GX_AJAX_IV": "12345678901234567890123456789012",
+        "AJAX_SECURITY_TOKEN": "abcdefabcdefabcdefabcdefabcdefabcdef",
+        "HCHISTORYLINEIMAGE_0001_Fecha": "21/04/2026",
+        "HCHISTORYLINEDATA_0001_Especialidad": "SERVICIO",
+        "HCHISTORYLINEDATA_0001_Profesional": "DRA. TEST",
+        "GX_AUTH_HC": "auth-token",
+        "gxhash_vDOCREPOID_0001": "{_hash("repo")}",
+        "gxhash_vDOCUNIQUEID_0001": "{_hash("unique")}",
+        "gxhash_vDOCFECHA_0001": "{_hash("2026/04/21 00:00:00")}",
+        "gxhash_vDOCCATEGORIA_0001": "{_hash("Policlinica")}"
+      }}' />
+    """
+
+    targets = extract_hcd_visit_targets(html)
+
+    assert extract_hcd_ajax_security_token(html) == "12345678901234567890123456789012abcdefabcdefabcdefabcdefabcdefab"
+    assert extract_hcd_security_headers(html) == {
+        "AJAX_SECURITY_TOKEN": "abcdefabcdefabcdefabcdefabcdefabcdef",
+        "X-GXAUTH-TOKEN": "auth-token",
+    }
+    assert len(targets) == 1
+    assert targets[0].parms == ("repo", "unique", "2026/04/21 00:00:00", "Policlinica")
+    assert len(targets[0].hsh) == 4
+
+
+def test_extract_hcd_ajax_security_token_prefers_ajax_key() -> None:
+    html = """
+    <input type="hidden" name="GXState"
+      value='{
+        "GX_AJAX_IV": "11111111111111111111111111111111",
+        "GX_AJAX_KEY": "22222222222222222222222222222222",
+        "AJAX_SECURITY_TOKEN": "abcdefabcdefabcdefabcdefabcdefabcdef"
+      }' />
+    """
+
+    assert extract_hcd_ajax_security_token(html) == "22222222222222222222222222222222abcdefabcdefabcdefabcdefabcdefab"
+
+
+def test_extract_hcd_visualizer_url_from_ucmethod() -> None:
+    response = {
+        "gxCommands": [
+            {"exomethod": {"Method": "OpenRedirectModal", "Parms": []}},
+            {
+                "ucmethod": {
+                    "Control": "UCBROWSERINTERFACE1Container",
+                    "Method": "goUrl",
+                    "Parms": ["com.mihcd.visualizarcda?opaque-token"],
+                }
+            },
+        ]
+    }
+
+    assert extract_hcd_visualizer_url(response) == "com.mihcd.visualizarcda?opaque-token"
+
+
+def _hash(value: str) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({"gx-val": value}).encode()).decode().rstrip("=")
+    return f"header.{payload}.signature"

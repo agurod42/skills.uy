@@ -53,11 +53,14 @@ class GeneXusEvent:
     parms: list[Any] = field(default_factory=list)
     grids: dict[str, Any] = field(default_factory=dict)
     hsh: list[Any] = field(default_factory=list)
+    grid: int | None = None
+    row: str = ""
+    p_row: str = ""
     is_master_page: bool = False
     cmp_ctx: str = ""
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "MPage": self.is_master_page,
             "cmpCtx": self.cmp_ctx,
             "parms": self.parms,
@@ -67,6 +70,12 @@ class GeneXusEvent:
             "events": list(self.events),
             "grids": self.grids,
         }
+        if self.grid is not None:
+            payload["grid"] = self.grid
+            payload["pRow"] = self.p_row
+        if self.row:
+            payload["row"] = self.row
+        return payload
 
 
 def values_dict(response: dict[str, Any]) -> dict[str, Any]:

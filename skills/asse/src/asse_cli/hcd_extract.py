@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 import html
 import json
 import re
@@ -8,8 +9,6 @@ from typing import Any, Iterable
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
-
-from asse_cli.har import HarRequest
 
 
 HCD_SERVLET_BASE = "https://historiaclinicadigital.gub.uy/mihcd/servlet/"
@@ -56,43 +55,143 @@ class HcdAccessLogEntry:
     emergency: bool
 
 
-def extract_hcd_timeline_from_har(requests: list[HarRequest]) -> list[HcdEncounter]:
-    best: list[HcdEncounter] = []
-    for request in requests:
-        if "historiaclinicadigital.gub.uy" not in request.host:
-            continue
-        if "com.mihcd.hc" not in request.url:
-            continue
-        encounters = extract_hcd_timeline(request.response_text or "")
-        if len(encounters) > len(best):
-            best = encounters
-    return best
+@dataclass(frozen=True)
+class HcdVisitDocument:
+    row: int
+    title: str
+    date: str
+    category: str
+    provider: str
+    professional: str
+    event_date: str
+    text: str
 
 
-def extract_hcd_vaccine_report_from_har(requests: list[HarRequest]) -> HcdVaccineReport | None:
-    best: HcdVaccineReport | None = None
-    for request in requests:
-        if "historiaclinicadigital.gub.uy" not in request.host:
-            continue
-        if "com.mihcd.historiavacunas" not in request.url:
-            continue
-        report = extract_hcd_vaccine_report(request.response_text or "")
-        if report and (best is None or report.report_url or report.vaccinations):
-            best = report
-    return best
+@dataclass(frozen=True)
+class HcdVisitTarget:
+    row: int
+    date: str
+    category: str
+    provider: str
+    specialty: str
+    professional: str
+    parms: tuple[str, str, str, str]
+    hsh: tuple[dict[str, str], ...]
 
 
-def extract_hcd_accesses_from_har(requests: list[HarRequest]) -> list[HcdAccessLogEntry]:
-    best: list[HcdAccessLogEntry] = []
-    for request in requests:
-        if "historiaclinicadigital.gub.uy" not in request.host:
+def extract_hcd_visit_targets(content: str) -> list[HcdVisitTarget]:
+    values = _flat_values_from_content(content)
+    suffixes = sorted(
+        {
+            match.group(1)
+            for key in values
+            if (match := re.match(r"gxhash_vDOCREPOID_(\d{4})$", key))
+        }
+    )
+    targets: list[HcdVisitTarget] = []
+    for suffix in suffixes:
+        hash_names = ("vDOCREPOID", "vDOCUNIQUEID", "vDOCFECHA", "vDOCCATEGORIA")
+        hashes = tuple(
+            {"hsh": _text(values.get(f"gxhash_{name}_{suffix}")), "row": suffix}
+            for name in hash_names
+        )
+        if any(not item["hsh"] for item in hashes):
             continue
-        if "historiaaccesos" not in request.url and "contenedoraccesos" not in request.url:
+        parms = tuple(
+            _text(values.get(f"{name}_{suffix}")) or _gx_hash_value(item["hsh"])
+            for name, item in zip(hash_names, hashes, strict=True)
+        )
+        if any(not item for item in parms):
             continue
-        accesses = extract_hcd_accesses(request.response_text or "")
-        if len(accesses) > len(best):
-            best = accesses
-    return best
+        targets.append(
+            HcdVisitTarget(
+                row=int(suffix),
+                date=_text(values.get(f"HCHISTORYLINEIMAGE_{suffix}_Fecha")),
+                category=parms[3],
+                provider=_text(values.get(f"HCHISTORYLINEIMAGE_{suffix}_Nombreprestador"))
+                or _text(values.get(f"HCHISTORYLINEIMAGE_{suffix}_Datainfoextraprestador")),
+                specialty=_text(values.get(f"HCHISTORYLINEDATA_{suffix}_Especialidad")),
+                professional=_text(values.get(f"HCHISTORYLINEDATA_{suffix}_Profesional")),
+                parms=parms,  # type: ignore[arg-type]
+                hsh=hashes,
+            )
+        )
+    return targets
+
+
+def extract_hcd_ajax_security_token(content: str) -> str:
+    values = _flat_values_from_content(content)
+    ajax_key = _text(values.get("GX_AJAX_KEY")) or _text(values.get("GX_AJAX_IV"))
+    ajax_security_token = _text(values.get("AJAX_SECURITY_TOKEN"))
+    if not ajax_key or len(ajax_security_token) < 32:
+        return ""
+    return f"{ajax_key}{ajax_security_token[:32]}"
+
+
+def extract_hcd_security_headers(content: str) -> dict[str, str]:
+    values = _flat_values_from_content(content)
+    headers: dict[str, str] = {}
+    ajax_security_token = _text(values.get("AJAX_SECURITY_TOKEN"))
+    gx_auth_token = _text(values.get("GX_AUTH_HC"))
+    if ajax_security_token:
+        headers["AJAX_SECURITY_TOKEN"] = ajax_security_token
+    if gx_auth_token:
+        headers["X-GXAUTH-TOKEN"] = gx_auth_token
+    return headers
+
+
+def extract_hcd_visit_wrapper_meta(content: str) -> dict[str, str]:
+    values = _flat_values_from_content(content)
+    return {
+        "date": _text(values.get("vFECHASTRING")),
+        "category": _text(values.get("vCATEGORIA")),
+    }
+
+
+def extract_hcd_visualizer_url(response: dict[str, Any]) -> str:
+    for command in response.get("gxCommands") or []:
+        value = _find_visualizer_url(command)
+        if value:
+            return value
+    return ""
+
+
+def extract_hcd_cda_iframe_url(content: str) -> str:
+    soup = BeautifulSoup(content, "html.parser")
+    iframe = soup.find("iframe", src=True)
+    if iframe:
+        return urljoin(HCD_SERVLET_BASE, str(iframe["src"]))
+    match = re.search(r"com\.mihcd\.aopencdasesion[^\"'<>\s]*", content)
+    return urljoin(HCD_SERVLET_BASE, match.group(0)) if match else ""
+
+
+def extract_hcd_visit_document(
+    content: str,
+    *,
+    meta: dict[str, str] | None = None,
+    row: int = 1,
+) -> HcdVisitDocument | None:
+    if not content:
+        return None
+    soup = BeautifulSoup(content, "html.parser")
+    title = _compact_text(soup.title.get_text(" ")) if soup.title else ""
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    text = _lines_text(soup)
+    if not text:
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    meta = meta or {}
+    return HcdVisitDocument(
+        row=row,
+        title=title,
+        date=meta.get("date", ""),
+        category=meta.get("category", ""),
+        provider=_value_after_label(lines, "Prestador"),
+        professional=_value_after_label(lines, "Profesional"),
+        event_date=_value_after_label(lines, "Fecha del evento"),
+        text=text,
+    )
 
 
 def extract_hcd_timeline(content: str) -> list[HcdEncounter]:
@@ -332,6 +431,45 @@ def _first_text(item: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _gx_hash_value(token: str) -> str:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return ""
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        value = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return ""
+    return _text(value.get("gx-val")) if isinstance(value, dict) else ""
+
+
+def _find_visualizer_url(value: Any) -> str:
+    if isinstance(value, str):
+        return value if "visualizarcda" in value else ""
+    if isinstance(value, list):
+        for item in value:
+            found = _find_visualizer_url(item)
+            if found:
+                return found
+    if isinstance(value, dict):
+        for item in value.values():
+            found = _find_visualizer_url(item)
+            if found:
+                return found
+    return ""
+
+
+def _value_after_label(lines: list[str], label: str) -> str:
+    for idx, line in enumerate(lines):
+        if line == label and idx + 1 < len(lines):
+            return lines[idx + 1]
+        prefix = f"{label} "
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return ""
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -340,3 +478,12 @@ def _text(value: Any) -> str:
 
 def _compact_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _lines_text(soup: BeautifulSoup) -> str:
+    lines: list[str] = []
+    for line in soup.get_text("\n").splitlines():
+        line = _compact_text(html.unescape(line))
+        if line:
+            lines.append(line)
+    return "\n".join(lines)

@@ -5,18 +5,15 @@ Agenda Web para reservas y Historia Clínica Digital / HCEN para lectura
 read-only de historia clínica.
 
 Las webs observadas usan GeneXus. Esta herramienta no usa GeneXus ni compila nada:
-reproduce contratos HTTP/JSON/form-urlencoded que usa el frontend y parsea HTML/HARs
-de sesiones reales.
+reproduce contratos HTTP/JSON/form-urlencoded que usa el frontend y parsea respuestas
+HTML/JSON de sesiones reales.
 
 ## Estado
 
 Prototipo:
 
-- inspecciona HARs de `www.asse.com.uy`, `agendaweb.asse.uy` y
-  `historiaclinicadigital.gub.uy`;
-- extrae endpoints, eventos GeneXus, cookies, comandos y datos read-only;
 - consulta reservas de Agenda Web con sesión local;
-- lee timeline, vacunas y accesos de HCD/HCEN cuando hay sesión o HAR;
+- lee timeline, visitas, vacunas y accesos de HCD/HCEN cuando hay sesión local;
 - evita acciones destructivas por defecto.
 
 ## Uso local
@@ -26,25 +23,15 @@ python3.11 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-asse agenda har summary /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
-asse agenda har events /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
-asse agenda har public-links /Users/agurodriguez/Downloads/www.asse.com.uy.har
-asse agenda har reservations /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
-
-asse hcd har timeline /Users/agurodriguez/Downloads/historiaclinicadigital.gub.uy.har
-asse hcd har vacunas /Users/agurodriguez/Downloads/historiaclinicadigital.gub.uy.har
-asse hcd har accesos /Users/agurodriguez/Downloads/historiaclinicadigital.gub.uy.har
-```
-
-Sesiones live:
-
-```bash
 asse agenda session login-browser
 asse agenda reservas list
 
 asse hcd session login-browser
 asse hcd timeline
+asse hcd visitas
+asse hcd visita 1
 asse hcd vacunas
+asse hcd accesos
 ```
 
 `login-browser` instala Playwright y Chromium automáticamente en el primer uso
@@ -59,7 +46,6 @@ Las sesiones se guardan separadas:
 
 Capas:
 
-- `har.py`: lectura segura de HAR y extracción de trazas/cookies.
 - `genexus.py`: modelos de evento/respuesta y estado GeneXus.
 - `client.py`: cliente HTTP compartido con cookies y sesión.
 - `agenda_client.py`: cliente de Agenda Web.
@@ -69,9 +55,6 @@ Capas:
 - `cli.py`: comandos de usuario.
 
 ## Seguridad
-
-Los HAR pueden contener cookies, identificadores, tokens, datos clínicos y datos
-personales. No commitear HAR reales.
 
 Los links a documentos clínicos y certificados se redactan por defecto. Usar
 `--show-links` solo cuando se necesite ver el valor crudo.

@@ -20,10 +20,13 @@ npx asse-cli --help
 Comandos principales:
 
 ```bash
+asse agenda session login-browser
 asse agenda reservas list
-asse agenda har reservations agendaweb.har
+asse hcd session login-browser
 asse hcd timeline
-asse hcd har timeline historiaclinicadigital.gub.uy.har
+asse hcd visitas
+asse hcd visita 1
+asse hcd vacunas
 ```
 
 ## Variables de entorno
