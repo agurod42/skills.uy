@@ -28,7 +28,7 @@ python3.11 -m venv .venv
 pip install -e ".[dev]"
 ```
 
-Optional browser-driven login (uses Playwright):
+Browser-driven login auto-installs Playwright and Chromium on first use. To preinstall manually:
 
 ```bash
 pip install -e ".[browser]"

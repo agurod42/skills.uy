@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import importlib
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
@@ -379,15 +382,17 @@ def _login_with_browser(
     headless: bool,
     prompt: str,
 ) -> None:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise typer.BadParameter(
-            'Falta Playwright. Instalalo con: pip install -e ".[browser]" && playwright install chromium'
-        ) from exc
+    sync_playwright = _ensure_playwright()
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
+        try:
+            browser = playwright.chromium.launch(headless=headless)
+        except Exception as exc:
+            if not _looks_like_missing_browser(exc):
+                raise
+            typer.echo("Chromium de Playwright no esta instalado. Instalando en este primer uso...")
+            _run_bootstrap_command([sys.executable, "-m", "playwright", "install", "chromium"])
+            browser = playwright.chromium.launch(headless=headless)
         context = browser.new_context()
         page = context.new_page()
         page.goto(login_url)
@@ -406,6 +411,41 @@ def _login_with_browser(
         raise typer.Exit(1)
     WebSession(cookies=cookies, base_url=base_url, current_url=current_url).save(session_path)
     typer.echo(f"Sesion guardada en {session_path}")
+
+
+def _ensure_playwright():
+    try:
+        from playwright.sync_api import sync_playwright
+
+        return sync_playwright
+    except ImportError:
+        typer.echo("Playwright no esta instalado. Instalando en este primer uso...")
+        _run_bootstrap_command([sys.executable, "-m", "pip", "install", "playwright>=1.45.0"])
+        importlib.invalidate_caches()
+        try:
+            from playwright.sync_api import sync_playwright
+
+            return sync_playwright
+        except ImportError as exc:
+            raise typer.BadParameter(
+                "No pude importar Playwright despues de instalarlo. "
+                f"Reintente manualmente con: {sys.executable} -m pip install playwright"
+            ) from exc
+
+
+def _run_bootstrap_command(command: list[str]) -> None:
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        raise typer.BadParameter(f"Fallo el bootstrap automatico: {' '.join(command)}")
+
+
+def _looks_like_missing_browser(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "executable doesn't exist" in message
+        or "please run the following command" in message
+        or "playwright install" in message
+    )
 
 
 def _show_session(session_path: Path, *, default_base_url: str) -> None:

@@ -47,6 +47,9 @@ asse hcd timeline
 asse hcd vacunas
 ```
 
+`login-browser` instala Playwright y Chromium automáticamente en el primer uso
+si no están disponibles en el entorno Python actual.
+
 Las sesiones se guardan separadas:
 
 - `~/.asse-cli/agenda-session.json`
