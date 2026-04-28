@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "asse-cli"
 version = "0.1.0"
-description = "CLI experimental para interactuar con Agenda Web de ASSE"
+description = "CLI experimental para Agenda Web de ASSE e Historia Clinica Digital"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,40 +1,74 @@
 # ASSE CLI
 
-CLI experimental para entender y automatizar flujos de Agenda Web de ASSE.
+CLI experimental para entender y consultar flujos digitales vinculados a ASSE:
+Agenda Web para reservas y Historia Clínica Digital / HCEN para lectura
+read-only de historia clínica.
 
-La web observada en los HAR usa GeneXus. Esta herramienta no usa GeneXus ni compila nada
-GeneXus: reproduce el contrato HTTP/JSON que usa el frontend.
+Las webs observadas usan GeneXus. Esta herramienta no usa GeneXus ni compila nada:
+reproduce contratos HTTP/JSON/form-urlencoded que usa el frontend y parsea HTML/HARs
+de sesiones reales.
 
 ## Estado
 
-Primer prototipo:
+Prototipo:
 
-- inspecciona HAR de `www.asse.com.uy` y `agendaweb.asse.uy`;
-- extrae endpoints, eventos GeneXus, cookies y comandos;
-- modela sesión y estado GeneXus para implementar comandos reales;
+- inspecciona HARs de `www.asse.com.uy`, `agendaweb.asse.uy` y
+  `historiaclinicadigital.gub.uy`;
+- extrae endpoints, eventos GeneXus, cookies, comandos y datos read-only;
+- consulta reservas de Agenda Web con sesión local;
+- lee timeline, vacunas y accesos de HCD/HCEN cuando hay sesión o HAR;
 - evita acciones destructivas por defecto.
 
 ## Uso local
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-asse har summary /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
-asse har events /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
-asse har public-links /Users/agurodriguez/Downloads/www.asse.com.uy.har
+asse agenda har summary /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
+asse agenda har events /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
+asse agenda har public-links /Users/agurodriguez/Downloads/www.asse.com.uy.har
+asse agenda har reservations /Users/agurodriguez/Downloads/agendaweb.asse.uy.har
+
+asse hcd har timeline /Users/agurodriguez/Downloads/historiaclinicadigital.gub.uy.har
+asse hcd har vacunas /Users/agurodriguez/Downloads/historiaclinicadigital.gub.uy.har
+asse hcd har accesos /Users/agurodriguez/Downloads/historiaclinicadigital.gub.uy.har
 ```
+
+Sesiones live:
+
+```bash
+asse agenda session login-browser
+asse agenda reservas list
+
+asse hcd session login-browser
+asse hcd timeline
+asse hcd vacunas
+```
+
+Las sesiones se guardan separadas:
+
+- `~/.asse-cli/agenda-session.json`
+- `~/.asse-cli/hcd-session.json`
 
 ## Diseño
 
 Capas:
 
-- `har.py`: lectura segura de HAR y extracción de trazas.
+- `har.py`: lectura segura de HAR y extracción de trazas/cookies.
 - `genexus.py`: modelos de evento/respuesta y estado GeneXus.
-- `client.py`: cliente HTTP con cookies, tokens y estado.
+- `client.py`: cliente HTTP compartido con cookies y sesión.
+- `agenda_client.py`: cliente de Agenda Web.
+- `hcd_client.py`: cliente de Historia Clínica Digital.
+- `extract.py`: parsers de Agenda Web.
+- `hcd_extract.py`: parsers de HCD/HCEN.
 - `cli.py`: comandos de usuario.
 
 ## Seguridad
 
-Los HAR pueden contener cookies, identificadores y datos personales. No commitear HAR reales.
+Los HAR pueden contener cookies, identificadores, tokens, datos clínicos y datos
+personales. No commitear HAR reales.
+
+Los links a documentos clínicos y certificados se redactan por defecto. Usar
+`--show-links` solo cuando se necesite ver el valor crudo.

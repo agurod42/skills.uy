@@ -1,7 +1,7 @@
 {
   "name": "asse-cli",
   "version": "0.1.0",
-  "description": "CLI experimental para interactuar con Agenda Web de ASSE (wrapper sobre el paquete Python asse-cli)",
+  "description": "CLI experimental para Agenda Web de ASSE e Historia Clinica Digital (wrapper sobre el paquete Python asse-cli)",
   "bin": {
     "asse": "bin/asse.js"
   },
@@ -20,7 +20,8 @@
     "asse",
     "cli",
     "uruguay",
-    "salud"
+    "salud",
+    "hcd"
   ],
   "license": "MIT",
   "repository": {

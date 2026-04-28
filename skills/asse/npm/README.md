@@ -17,6 +17,15 @@ O sin instalar:
 npx asse-cli --help
 ```
 
+Comandos principales:
+
+```bash
+asse agenda reservas list
+asse agenda har reservations agendaweb.har
+asse hcd timeline
+asse hcd har timeline historiaclinicadigital.gub.uy.har
+```
+
 ## Variables de entorno
 
 - `ASSE_SKIP_POSTINSTALL=1` — saltea el `pip install` automático.

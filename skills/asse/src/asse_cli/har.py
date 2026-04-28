@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 SENSITIVE_HEADERS = {"cookie", "authorization", "set-cookie"}
@@ -122,21 +122,40 @@ def extract_genexus_traces(requests: list[HarRequest]) -> list[GeneXusTrace]:
         if request.method != "POST":
             continue
         body = request.post_json()
-        if not body:
-            continue
-        if "objClass" not in body and "events" not in body:
+        if body and (
+            "objClass" in body
+            or "pkgName" in body
+            or ("MPage" in body and "parms" in body)
+        ):
+            response = request.response_json() or {}
+            commands = response.get("gxCommands") or []
+            traces.append(
+                GeneXusTrace(
+                    url=request.url,
+                    obj_class=str(body.get("objClass", "")),
+                    events=tuple(str(event) for event in body.get("events", [])),
+                    grids=tuple(sorted((body.get("grids") or {}).keys())),
+                    hash_count=len(body.get("hsh") or []),
+                    parm_count=len(body.get("parms") or []),
+                    response_keys=tuple(sorted(response.keys())),
+                    command_names=tuple(_command_name(command) for command in commands),
+                )
+            )
             continue
 
+        form = _parse_form_post(request.post_text)
+        if "GXEvent" not in form:
+            continue
         response = request.response_json() or {}
         commands = response.get("gxCommands") or []
         traces.append(
             GeneXusTrace(
                 url=request.url,
-                obj_class=str(body.get("objClass", "")),
-                events=tuple(str(event) for event in body.get("events", [])),
-                grids=tuple(sorted((body.get("grids") or {}).keys())),
-                hash_count=len(body.get("hsh") or []),
-                parm_count=len(body.get("parms") or []),
+                obj_class=_object_name_from_url(request.url),
+                events=("GXEvent",),
+                grids=tuple(),
+                hash_count=1,
+                parm_count=sum(1 for key in form if key.startswith("GXParm")),
                 response_keys=tuple(sorted(response.keys())),
                 command_names=tuple(_command_name(command) for command in commands),
             )
@@ -217,6 +236,21 @@ def _parse_cookie_header(header: str) -> dict[str, str]:
         if name:
             cookies[name] = value
     return cookies
+
+
+def _parse_form_post(post_text: str | None) -> dict[str, str]:
+    if not post_text:
+        return {}
+    parsed = parse_qs(post_text, keep_blank_values=True)
+    return {key: values[0] if values else "" for key, values in parsed.items()}
+
+
+def _object_name_from_url(url: str) -> str:
+    name = Path(urlparse(url).path).name
+    for prefix in ("com.agendaweb.", "com.mihcd."):
+        if name.startswith(prefix):
+            return name.removeprefix(prefix)
+    return name
 
 
 def _command_name(command: Any) -> str:
